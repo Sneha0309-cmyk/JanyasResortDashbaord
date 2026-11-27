@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Airbnb Dashboard</title>
+  <link rel="icon" href="/assets/janyas-logo.png">
+  <link rel="stylesheet" href="/dashboard.css">
+</head>
+<body>
+<div class="page">
+  <header class="page-header">
+    <div class="title-block">
+      <h1>Airbnb Booking Calendar</h1>
+      <p class="subtitle">Airbnb calendar sync dashboard</p>
+      <p id="status" class="status-line">Loading dashboard...</p>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-airbnb" id="syncAirbnbBtn" onclick="syncPlatform('airbnb')">Refresh Airbnb</button>
+      <button class="btn btn-neutral" id="syncAllBtn" onclick="syncAll()">Sync Now</button>
+      <button class="btn btn-light" onclick="logout()">Logout</button>
+    </div>
+  </header>
+
+  <div class="stats-row">
+    <div class="stat-card"><div class="stat-label">Total Events</div><div class="stat-value" id="statTotal">—</div><div class="stat-sub" id="statTotalSub">All platforms</div></div>
+    <div class="stat-card"><div class="stat-label">Unavailable Dates</div><div class="stat-value" id="statUnavailable">—</div><div class="stat-sub">Dates blocked/unavailable</div></div>
+    <div class="stat-card"><div class="stat-label">Conflicts</div><div class="stat-value" id="statConflicts">—</div><div class="stat-sub">Overlapping unavailable dates</div></div>
+    <div class="stat-card"><div class="stat-label">Next Auto Sync</div><div class="stat-value" id="statNextSync" style="font-size:20px;">—</div><div class="stat-sub">Every 5 minutes</div></div>
+  </div>
+
+  <div class="grid-2" id="syncConflictSection" style="display:none" aria-hidden="true">
+    <section class="panel">
+      <div class="panel-head"><div class="panel-title">Sync Status<small>Platform connection, last sync, errors, and counts</small></div></div>
+      <div class="sync-grid" id="syncGrid"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><div class="panel-title">Conflict Alerts<small>Overlapping dates across platforms. Confirmed bookings are never overwritten.</small></div></div>
+      <div id="conflictsBox" class="muted">No conflicts detected.</div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <div class="calendar-controls">
+      <div class="view-tabs">
+        <button class="tab active" data-view="month" onclick="setView('month')">Monthly</button>
+        <button class="tab" data-view="week" onclick="setView('week')">Weekly</button>
+        <button class="tab" data-view="day" onclick="setView('day')">Daily</button>
+      </div>
+      <div class="month-nav">
+        <button class="btn btn-light" onclick="changePeriod(-1)">← Previous</button>
+        <div class="month-title" id="periodTitle">—</div>
+        <button class="btn btn-light" onclick="changePeriod(1)">Next →</button>
+      </div>
+      <div class="platform-pills" id="platformFilters"></div>
+    </div>
+    <div class="legend">
+      <span><i class="dot available"></i> Available</span>
+      <span><i class="dot unavailable"></i> Not Available</span>
+      <span><i class="dot airbnb"></i> Airbnb</span>
+    </div>
+    <div id="calendarContainer" class="calendar-wrap"></div>
+  </section>
+
+  <section id="dateDetails" class="panel details">
+    <div class="panel-head">
+      <div class="panel-title" id="detailDate">Date details</div>
+      <button class="btn btn-light" onclick="closeDetails()">Close</button>
+    </div>
+    <div id="detailStatus"></div>
+    <div id="detailEvents"></div>
+  </section>
+
+  <section class="panel" id="bookingHistoryPanel">
+    <div class="panel-head">
+      <div class="panel-title">Booking History<small id="historySubtitle">Monthly booking records from database</small></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <button class="btn btn-light" id="clearDateFilterBtn" onclick="clearSelectedDate()" style="display:none;">Show full month</button>
+      </div>
+    </div>
+    <div id="historyMeta" class="muted" style="margin-bottom:10px;font-size:13px;"></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Booking ID</th><th>Check-in</th><th>Check-out</th><th>Platform</th><th>Listing</th><th>Status</th>
+        </tr></thead>
+        <tbody id="historyBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <div class="panel-title">Calendar Events<small>Check-in/check-out, source, booking status, availability, sync status</small></div>
+      <input type="search" class="search" id="searchBox" placeholder="Search platform, listing, status..." oninput="renderTable()">
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Platform</th><th>Listing</th><th>Event</th><th>Check-in</th><th>Check-out</th><th>Booking Status</th><th>Availability</th><th>Sync</th><th>Last Synced</th>
+        </tr></thead>
+        <tbody id="eventsBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="dash-footer">Owner Console · Live local data · Automatic sync every 5 minutes</div>
+</div>
+
+<script>
+let events = [];
+let conflicts = [];
+let syncStatus = null;
+let currentView = 'month';
+let platformFilter = 'all';
+let selectedDateKey = '';
+let historyLoading = false;
+let historyError = '';
+const today = new Date();
+let anchorDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
+function pad2(n){ return String(n).padStart(2,'0'); }
+function dateKey(v){ if(!v) return ''; if(typeof v==='string') return v.slice(0,10); const d=new Date(v); return isNaN(d)?'':`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
+function fmt(key){ if(!key) return '—'; const d=new Date(`${key}T00:00:00Z`); return isNaN(d)?key:d.toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric',timeZone:'UTC'}); }
+function fmtDateTime(v){ if(!v) return '—'; const d=new Date(v); return isNaN(d)?String(v):d.toLocaleString('en-IN'); }
+function esc(v){ return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function normalizePlatform(p){ p=String(p||'').toLowerCase(); if(p==='airbnb') return 'airbnb'; return p||'unknown'; }
+function platformColorKey(){ return 'airbnb'; }
+function platformLabel(){ return 'Airbnb'; }
+function isCancelled(e){ const s=String(e.booking_status||'').toLowerCase(); return s==='cancelled' || s==='canceled'; }
+function isActiveBooking(e){ if(isCancelled(e)) return false; const a=String(e.availability_status||'').toLowerCase(); if(a==='unavailable') return true; return String(e.status||'').toUpperCase()==='NOT AVAILABLE'; }
+function isUnavailable(e){ return isActiveBooking(e); }
+function eventDates(e){ if(Array.isArray(e.unavailable_dates)&&e.unavailable_dates.length) return e.unavailable_dates; if(!isActiveBooking(e)) return []; const s=dateKey(e.check_in||e.start_date), en=dateKey(e.check_out||e.end_date); if(!s||!en) return []; const cur=new Date(`${s}T00:00:00Z`), end=new Date(`${en}T00:00:00Z`); const out=[]; while(cur<end && out.length<3660){ out.push(cur.toISOString().slice(0,10)); cur.setUTCDate(cur.getUTCDate()+1); } return out; }
+function monthKeyForDate(d){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}`; }
+function monthsForCurrentView(){
+  if(currentView==='month') return [monthKeyForDate(new Date(anchorDate.getFullYear(), anchorDate.getMonth(), 1))];
+  if(currentView==='day') return [monthKeyForDate(anchorDate)];
+  const start = startOfWeek(anchorDate);
+  const end = new Date(start); end.setDate(end.getDate()+6);
+  const keys = [monthKeyForDate(start), monthKeyForDate(end)];
+  return [...new Set(keys)];
+}
+function bookingId(e){ return e.booking_id || e.external_event_id || e.uid || (e.id!=null?String(e.id):'—'); }
+function bookingStatusLabel(e){
+  const b = String(e.booking_status||'unknown').toUpperCase();
+  const a = String(e.availability_status||'unknown').toUpperCase();
+  const sync = String(e.sync_status||'—').toUpperCase();
+  return { booking: b, availability: a, sync };
+}
+
+async function api(url, opts={}) {
+  const res = await fetch(url, { credentials:'same-origin', cache:'no-store', ...opts, headers:{'Content-Type':'application/json', ...(opts.headers||{})} });
+  if (res.status === 401) { window.location.href='/login'; throw new Error('Authentication required'); }
+  const data = await res.json().catch(()=>({}));
+  if (!res.ok || data.success === false) throw new Error(data.message || `Request failed (${res.status})`);
+  return data;
+}
+
+function filteredEvents(){ return events.filter(e => normalizePlatform(e.platform) === 'airbnb'); }
+
+function buildUnavailableSet(){
+  const set = new Set();
+  for (const e of filteredEvents()) if (isUnavailable(e)) for (const d of eventDates(e)) set.add(d);
+  return set;
+}
+
+async function loadDashboard(silent=false){
+  const statusEl = document.getElementById('status');
+  historyError = '';
+  if(!silent) { statusEl.textContent = 'Loading dashboard...'; historyLoading = true; renderBookingHistory(); }
+  try {
+    const monthKeys = monthsForCurrentView();
+    const eventRequests = monthKeys.map(mk => api(`/api/events?month=${encodeURIComponent(mk)}`));
+    const [statusData, ...eventDatas] = await Promise.all([api('/api/sync-status'), ...eventRequests]);
+    const merged = new Map();
+    const mergedConflicts = new Map();
+    for (const ed of eventDatas) {
+      (Array.isArray(ed.events) ? ed.events : []).forEach(e => merged.set(String(e.id), e));
+      (Array.isArray(ed.conflicts) ? ed.conflicts : []).forEach(c => {
+        const key = `${c.property_id}|${(c.events||[]).map(e=>`${e.platform}:${e.external_event_id}`).sort().join('|')}|${c.overlap_start}|${c.overlap_end}`;
+        mergedConflicts.set(key, c);
+      });
+    }
+    events = [...merged.values()].sort((a,b)=>String(a.check_in||a.start_date||'').localeCompare(String(b.check_in||b.start_date||'')) || String(a.platform||'').localeCompare(String(b.platform||'')) || Number(a.id||0)-Number(b.id||0));
+    conflicts = [...mergedConflicts.values()];
+    syncStatus = statusData;
+    renderStats({ events, conflicts }, statusData);
+    renderSyncStatus(statusData);
+    renderConflicts(conflicts);
+    renderCalendar();
+    renderTable();
+    renderBookingHistory();
+    if(!silent) statusEl.textContent = `Loaded ${events.length} booking records for the selected period. Auto sync every 5 minutes.`;
+  } catch (err) {
+    console.error(err);
+    historyError = err.message || 'Could not load booking history.';
+    renderBookingHistory();
+    if(!silent) statusEl.textContent = historyError;
+  } finally {
+    historyLoading = false;
+    renderBookingHistory();
+  }
+}
+
+function renderStats(eventsData, statusData){
+  const periodEvents = Array.isArray(eventsData.events) ? eventsData.events : events;
+  const airbnbEvents = periodEvents.filter(e => normalizePlatform(e.platform) === 'airbnb');
+  const unavailable = new Set();
+  airbnbEvents.forEach(e => { if (isActiveBooking(e)) eventDates(e).forEach(d => unavailable.add(d)); });
+  document.getElementById('statTotal').textContent = airbnbEvents.length;
+  document.getElementById('statTotalSub').textContent = currentView === 'month' ? 'Airbnb events in selected month' : 'Airbnb events in selected period';
+  document.getElementById('statUnavailable').textContent = unavailable.size;
+  document.getElementById('statConflicts').textContent = Array.isArray(eventsData.conflicts) ? eventsData.conflicts.length : (conflicts.length || 0);
+  document.getElementById('statNextSync').textContent = statusData && statusData.next_sync_at ? fmtDateTime(statusData.next_sync_at) : '—';
+}
+
+function renderSyncStatus(statusData){
+  const grid = document.getElementById('syncGrid');
+  const platforms = statusData.platforms || {};
+  const p = platforms.airbnb || {};
+  const ok = p.last_sync_status === 'success' || p.last_sync_status === 'success_empty';
+  const failed = p.last_sync_status === 'failed';
+  const pill = ok ? '<span class="pill ok">Connected</span>' : failed ? '<span class="pill bad">Failed</span>' : '<span class="pill warn">Unknown</span>';
+  grid.innerHTML = `<div class="sync-card">
+    <h3><span class="badge airbnb">Airbnb</span> ${pill}</h3>
+    <div class="sync-meta">
+      <div><strong>Last successful sync:</strong> ${esc(fmtDateTime(p.last_successful_sync))}</div>
+      <div><strong>Last attempt:</strong> ${esc(fmtDateTime(p.last_synced_at))} (${esc(p.last_sync_status||'never')})</div>
+      <div><strong>Total events:</strong> ${Number(p.total_events||0)} · <strong>Unavailable dates:</strong> ${Number(p.unavailable_dates_count||0)}</div>
+      <div><strong>Message:</strong> ${esc(p.last_sync_message||'—')}</div>
+      ${p.last_sync_error ? `<div style="color:#991b1b"><strong>Error:</strong> ${esc(p.last_sync_error)}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+function renderConflicts(list){
+  const box = document.getElementById('conflictsBox');
+  if(!list.length){ box.innerHTML = '<div class="muted">No overlapping unavailable date conflicts detected.</div>'; return; }
+  box.innerHTML = list.map(c=>{
+    const evs = (c.events||[]).map(e=>`<span class="badge airbnb">Airbnb</span> ${esc(fmt(e.check_in))}→${esc(fmt(e.check_out))} (${esc(e.booking_status||'unknown')})`).join('<br>');
+    return `<div class="conflict-item"><strong>Overlap:</strong> ${esc(fmt(c.overlap_start))} to ${esc(fmt(c.overlap_end))}<div style="margin-top:6px;font-size:12px;color:#374151">${evs}</div></div>`;
+  }).join('');
+}
+
+function setView(view){
+  currentView=view;
+  document.querySelectorAll('.tab[data-view]').forEach(b=>b.classList.toggle('active', b.dataset.view===view));
+  selectedDateKey = '';
+  closeDetails();
+  loadDashboard();
+}
+function changePeriod(dir){
+  const d = new Date(anchorDate);
+  if(currentView==='month') d.setMonth(d.getMonth()+dir);
+  else if(currentView==='week') d.setDate(d.getDate()+dir*7);
+  else d.setDate(d.getDate()+dir);
+  anchorDate = d;
+  selectedDateKey = '';
+  closeDetails();
+  loadDashboard();
+}
+
+function renderPlatformFilters(){
+  const el = document.getElementById('platformFilters');
+  el.innerHTML = `<button class="tab active">Airbnb</button>`;
+}
+function setPlatformFilter(k){ platformFilter=k; renderPlatformFilters(); renderCalendar(); renderTable(); }
+
+function renderCalendar(){
+  renderPlatformFilters();
+  if(currentView==='month') return renderMonth();
+  if(currentView==='week') return renderWeek();
+  return renderDay();
+}
+
+function bookingCoverDates(e){
+  const s=dateKey(e.check_in||e.start_date), en=dateKey(e.check_out||e.end_date);
+  if(!s||!en) return [];
+  const cur=new Date(`${s}T00:00:00Z`), end=new Date(`${en}T00:00:00Z`);
+  const out=[];
+  while(cur<end && out.length<3660){ out.push(cur.toISOString().slice(0,10)); cur.setUTCDate(cur.getUTCDate()+1); }
+  return out;
+}
+function getEventsForDate(key){
+  return filteredEvents().filter(e=>bookingCoverDates(e).includes(key));
+}
+
+function renderMonth(){
+  const container = document.getElementById('calendarContainer');
+  const y=anchorDate.getFullYear(), m=anchorDate.getMonth();
+  document.getElementById('periodTitle').textContent = new Date(y,m,1).toLocaleDateString('en-IN',{month:'long',year:'numeric'});
+  const first = new Date(y,m,1).getDay();
+  const daysInMonth = new Date(y,m+1,0).getDate();
+  const unavail = buildUnavailableSet();
+  let html = '<div class="calendar-grid">';
+  ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].forEach(d=>html+=`<div class="weekday">${d}</div>`);
+  for(let i=0;i<first;i++) html+='<div class="day empty"></div>';
+  for(let day=1; day<=daysInMonth; day++){
+    const key = `${y}-${pad2(m+1)}-${pad2(day)}`;
+    const matches = getEventsForDate(key);
+    const unavailable = unavail.has(key);
+    html += `<div class="day" onclick="showDetails('${key}')">
+      <div class="day-top"><div class="day-number">${day}</div><div class="day-pill ${unavailable?'unavailable':'available'}">${unavailable?'Unavailable':'Available'}</div></div>
+      ${matches.slice(0,3).map(e=>`<button class="event-chip ${esc(platformColorKey(e))}" onclick="event.stopPropagation();showDetails('${key}',${e.id})">${esc(platformLabel(e))}</button>`).join('')}
+      ${matches.length>3?`<div class="muted" style="font-size:11px">+${matches.length-3} more</div>`:''}
+    </div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function startOfWeek(d){ const x=new Date(d); const day=x.getDay(); x.setDate(x.getDate()-day); x.setHours(0,0,0,0); return x; }
+function renderWeek(){
+  const container = document.getElementById('calendarContainer');
+  const start = startOfWeek(anchorDate);
+  const end = new Date(start); end.setDate(end.getDate()+6);
+  document.getElementById('periodTitle').textContent = `${fmt(dateKey(start))} - ${fmt(dateKey(end))}`;
+  const unavail = buildUnavailableSet();
+  let html = '<div class="week-grid">';
+  for(let i=0;i<7;i++){
+    const d = new Date(start); d.setDate(start.getDate()+i);
+    const key = dateKey(d);
+    const matches = getEventsForDate(key);
+    const unavailable = unavail.has(key);
+    html += `<div class="week-col"><h4>${d.toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'})} <span class="badge ${unavailable?'unavailable':'available'}">${unavailable?'Unavailable':'Available'}</span></h4>
+      ${matches.length?matches.map(e=>`<div style="margin-bottom:8px"><span class="badge ${esc(platformColorKey(e))}">${esc(platformLabel(e))}</span><div style="font-size:12px;margin-top:4px">${esc(e.event_title||'Event')}</div><div style="font-size:11px;color:#6b7280">${esc(fmt(e.check_in||e.start_date))} → ${esc(fmt(e.check_out||e.end_date))}</div></div>`).join(''):'<div class="muted" style="font-size:12px">No events</div>'}
+    </div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function renderDay(){
+  const container = document.getElementById('calendarContainer');
+  const key = dateKey(anchorDate);
+  document.getElementById('periodTitle').textContent = fmt(key);
+  const matches = getEventsForDate(key);
+  const unavailable = buildUnavailableSet().has(key);
+  container.innerHTML = `<div class="day-list">
+    <div class="day-item"><strong>Status:</strong> <span class="badge ${unavailable?'unavailable':'available'}">${unavailable?'Unavailable/Blocked':'Available'}</span></div>
+    ${matches.length?matches.map(e=>`<div class="day-item">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px"><span class="badge ${esc(platformColorKey(e))}">${esc(platformLabel(e))}</span><span class="badge ${isUnavailable(e)?'unavailable':'available'}">${esc(e.availability_status||'unknown')}</span><span class="badge unknown">${esc(e.booking_status||'unknown')}</span></div>
+      <div><strong>${esc(e.event_title||'Event')}</strong></div>
+      <div style="font-size:13px;color:#374151">Check-in: ${esc(fmt(e.check_in||e.start_date))} · Check-out: ${esc(fmt(e.check_out||e.end_date))}</div>
+      <div style="font-size:12px;color:#6b7280">Sync: ${esc(e.sync_status||'—')} · Last synced: ${esc(fmtDateTime(e.last_synced_at))}</div>
+    </div>`).join(''):'<div class="day-item muted">No events for this date.</div>'}
+  </div>`;
+}
+
+function statusText(e){
+  if (isCancelled(e)) return 'Cancelled';
+  return isActiveBooking(e) ? 'Not Available' : 'Available';
+}
+
+function renderBookingHistory(){
+  const body = document.getElementById('historyBody');
+  const meta = document.getElementById('historyMeta');
+  const subtitle = document.getElementById('historySubtitle');
+  const clearBtn = document.getElementById('clearDateFilterBtn');
+  if (!body || !meta || !subtitle) return;
+
+  const monthLabel = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), 1)
+    .toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  const periodEvents = filteredEvents().slice().sort((a,b)=>String(a.check_in||a.start_date||'').localeCompare(String(b.check_in||b.start_date||'')) || Number(a.id||0)-Number(b.id||0));
+  const selected = selectedDateKey ? periodEvents.filter(e => getEventsForDate(selectedDateKey).some(x => String(x.id)===String(e.id)) || eventDates(e).includes(selectedDateKey) || dateKey(e.check_in||e.start_date)===selectedDateKey) : periodEvents;
+  const rows = selectedDateKey ? getEventsForDate(selectedDateKey) : periodEvents;
+
+  subtitle.textContent = selectedDateKey
+    ? `Bookings for ${fmt(selectedDateKey)} (from selected month database records)`
+    : `Monthly booking records from database for ${monthLabel}`;
+  clearBtn.style.display = selectedDateKey ? 'inline-flex' : 'none';
+
+  if (historyLoading) {
+    meta.textContent = 'Loading booking history...';
+    body.innerHTML = '<tr><td colspan="6" class="muted">Loading...</td></tr>';
+    return;
+  }
+  if (historyError) {
+    meta.textContent = historyError;
+    body.innerHTML = `<tr><td colspan="6" style="color:#991b1b;">${esc(historyError)}</td></tr>`;
+    return;
+  }
+
+  meta.textContent = selectedDateKey
+    ? `${rows.length} booking record(s) for ${fmt(selectedDateKey)}.`
+    : `${periodEvents.length} booking record(s) found for ${monthLabel}.`;
+
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="6" class="muted">${selectedDateKey ? 'No bookings found for this date.' : 'No booking history found for this month.'}</td></tr>`;
+    return;
+  }
+
+  body.innerHTML = rows.map(e => {
+    const st = statusText(e);
+    const badgeClass = st === 'Not Available' ? 'unavailable' : (st === 'Cancelled' ? 'unknown' : 'available');
+    return `<tr>
+      <td>${esc(bookingId(e))}</td>
+      <td>${esc(fmt(e.check_in || e.start_date))}</td>
+      <td>${esc(fmt(e.check_out || e.end_date))}</td>
+      <td><span class="badge ${esc(platformColorKey(e))}">${esc(platformLabel(e))}</span></td>
+      <td>${esc(e.listing_name || '—')}</td>
+      <td><span class="badge ${badgeClass}">${esc(st)}</span><div style="font-size:11px;color:#6b7280;margin-top:4px">Booking: ${esc(String(e.booking_status||'unknown'))}</div></td>
+    </tr>`;
+  }).join('');
+}
+
+function clearSelectedDate(){
+  selectedDateKey = '';
+  closeDetails();
+  renderBookingHistory();
+}
+
+function showDetails(key, focusId=null){
+  selectedDateKey = key;
+  let matches = getEventsForDate(key);
+  if(focusId!==null) matches = matches.filter(e=>String(e.id)===String(focusId));
+  const unavailable = buildUnavailableSet().has(key);
+  document.getElementById('detailDate').textContent = `Date details: ${fmt(key)}`;
+  document.getElementById('detailStatus').innerHTML = `<span class="badge ${unavailable?'unavailable':'available'}">${unavailable?'NOT AVAILABLE':'AVAILABLE'}</span>`;
+  document.getElementById('detailEvents').innerHTML = matches.length ? matches.map(e=>`
+    <div class="detail-event">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        <span class="badge ${esc(platformColorKey(e))}">${esc(platformLabel(e))}</span>
+        <span class="badge ${isActiveBooking(e)?'unavailable':(isCancelled(e)?'unknown':'available')}">${esc(statusText(e).toUpperCase())}</span>
+        <span class="badge unknown">BOOKING: ${esc(String(e.booking_status||'unknown').toUpperCase())}</span>
+      </div>
+      <p><strong>Booking ID:</strong> ${esc(bookingId(e))}</p>
+      <p><strong>Check-in:</strong> ${esc(fmt(e.check_in||e.start_date))}</p>
+      <p><strong>Check-out (exclusive):</strong> ${esc(fmt(e.check_out||e.end_date))}</p>
+      <p><strong>Platform:</strong> ${esc(platformLabel(e))}</p>
+      <p><strong>Listing:</strong> ${esc(e.listing_name||'—')}</p>
+      <p><strong>Status:</strong> ${esc(statusText(e))} (booking: ${esc(e.booking_status||'unknown')}, availability: ${esc(e.availability_status||'unknown')})</p>
+      <p>Sync status: ${esc(e.sync_status||'—')} | Last synced: ${esc(fmtDateTime(e.last_synced_at))}</p>
+    </div>`).join('') : `<p class="muted" style="margin-top:10px">No bookings found for this date.</p>`;
+  document.getElementById('dateDetails').classList.add('visible');
+  renderBookingHistory();
+  document.getElementById('dateDetails').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+function closeDetails(){
+  document.getElementById('dateDetails').classList.remove('visible');
+  // keep selectedDateKey as-is? clearing is handled by clearSelectedDate; close just hides panel
+}
+
+function renderTable(){
+  const q = document.getElementById('searchBox').value.trim().toLowerCase();
+  const rows = filteredEvents().filter(e=>{
+    if(!q) return true;
+    const hay = [platformLabel(e), e.listing_name, e.event_title, e.booking_status, e.availability_status, e.sync_status, e.external_event_id].join(' ').toLowerCase();
+    return hay.includes(q);
+  });
+  const body = document.getElementById('eventsBody');
+  body.innerHTML = rows.length ? rows.map(e=>`<tr>
+    <td><span class="badge ${esc(platformColorKey(e))}">${esc(platformLabel(e))}</span></td>
+    <td>${esc(e.listing_name||'—')}</td>
+    <td>${esc(e.event_title||'—')}<div style="font-size:11px;color:#6b7280">${esc(e.external_event_id||e.uid||'')}</div></td>
+    <td>${esc(fmt(e.check_in||e.start_date))}</td>
+    <td>${esc(fmt(e.check_out||e.end_date))}</td>
+    <td><span class="badge unknown">${esc(e.booking_status||'unknown')}</span></td>
+    <td><span class="badge ${isUnavailable(e)?'unavailable':'available'}">${esc(e.availability_status||'unknown')}</span></td>
+    <td>${esc(e.sync_status||'—')}</td>
+    <td>${esc(fmtDateTime(e.last_synced_at))}</td>
+  </tr>`).join('') : '<tr><td colspan="9" class="muted">No events found.</td></tr>';
+}
+
+async function syncPlatform(platform){
+  if (platform !== 'airbnb') return;
+  const btn = document.getElementById('syncAirbnbBtn');
+  if (!btn) return;
+  const old = btn.textContent; btn.disabled=true; btn.textContent='Syncing...';
+  document.getElementById('status').textContent = 'Syncing Airbnb...';
+  try {
+    const data = await api('/api/sync-calendar', { method:'POST' });
+    document.getElementById('status').textContent = data.message || 'Sync completed.';
+    await loadDashboard(true);
+  } catch(err){ console.error(err); document.getElementById('status').textContent = err.message; }
+  finally { btn.disabled=false; btn.textContent=old; }
+}
+
+async function syncAll(){
+  const btn = document.getElementById('syncAllBtn'); const old=btn.textContent; btn.disabled=true; btn.textContent='Syncing...';
+  try { const data = await api('/api/sync-all', {method:'POST'}); document.getElementById('status').textContent = data.success ? 'All platforms synced.' : 'Sync completed with some errors.'; await loadDashboard(true); }
+  catch(err){ console.error(err); document.getElementById('status').textContent = err.message; }
+  finally { btn.disabled=false; btn.textContent=old; }
+}
+
+async function logout(){ try { await api('/logout', {method:'POST'}); } catch(_){} window.location.href='/login'; }
+
+renderPlatformFilters();
+loadDashboard();
+setInterval(()=>loadDashboard(true), 5*60*1000);
+</script>
+</body>
+</html>
